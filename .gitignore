@@ -13,3 +13,4 @@ wheels/
 pyproject.toml
 uv.lock
 
+notebook/

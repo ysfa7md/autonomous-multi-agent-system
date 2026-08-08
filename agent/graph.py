@@ -3,26 +3,37 @@ from regex import E
 
 from agent.state import ResearchState
 from agent.router import should_retry
-from agent.nodes import planner, research, critic, reporting
+from agent.nodes import planner, research, critic, reporter, decision
 
+nodes = {
+    "planner": planner,
+    "research": research,
+    "critic": critic,
+    "decision": decision,
+    "reporter": reporter,
+}
 
 graph = StateGraph(ResearchState)
 
-
-nodes_list=[planner, research, critic, reporting]
-for node in nodes_list:
-    graph.add_node(node,str(node.__name__))
+for name, function in nodes.items():
+    graph.add_node(name, function)
 
 graph.add_edge(START, 'planner')
 graph.add_edge('planner', 'research')
 graph.add_edge('research', 'critic')
-graph.add_edge('reporting', END)
+graph.add_edge("critic", "decision")
 
 graph.add_conditional_edges(
-    source='critic',
-    condition=should_retry,
-    true_target='planner',
-    false_target='reporting'
+    "decision",
+    should_retry,   #route,
+    {
+        "retry": "planner",
+        "approve": "reporter",
+    },
 )
 
+graph.add_edge("reporter", END)
+
 app = graph.compile()
+
+print("Graph compiled ✓")

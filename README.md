@@ -9,16 +9,16 @@ wrapped in a Streamlit dashboard.
 task2/
 ├── agent/
 │   ├── __init__.py     # public surface: app, ResearchState, constants
-│   ├── state.py         # ResearchState schema + QUALITY_THRESHOLD / MAX_RETRIES
-│   ├── llm.py            # ChatGroq factory + token extraction (falls back to mock)
-│   ├── rag.py             # lightweight retrieval over uploaded docs
-│   ├── models.py           # Pydantic FinalReport (validated output)
-│   ├── nodes.py             # planner, researcher, critic, decision, reporting
-│   ├── router.py             # should_retry conditional edge
-│   └── graph.py               # build_graph() -> compiled LangGraph app
-├── app.py                # Streamlit dashboard (imports agent, no agent logic)
+│   ├── state.py        # ResearchState schema + QUALITY_THRESHOLD / MAX_RETRIES
+│   ├── llm.py          # ChatGroq factory + token extraction (falls back to mock)
+│   ├── rag.py          # lightweight retrieval over uploaded docs
+│   ├── models.py       # Pydantic FinalReport (validated output)
+│   ├── nodes.py        # planner, researcher, critic, decision, reporting
+│   ├── router.py       # should_retry conditional edge
+│   └── graph.py        # build_graph() -> compiled LangGraph app
+├── app.py              # Streamlit dashboard (imports agent, no agent logic)
 ├── requirements.txt
-├── .env.example
+├── .env
 └── README.md
 ```
 
@@ -28,7 +28,7 @@ task2/
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env             # then paste your GROQ_API_KEY
+# then paste your GROQ_API_KEY
 streamlit run app.py
 ```
 

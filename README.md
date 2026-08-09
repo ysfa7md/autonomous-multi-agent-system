@@ -40,12 +40,3 @@ intentional: it's how you demo the retry cycle without burning API calls.
 
 ...
 
-## Checklist before submitting
-
-- [X] Fresh clone, fresh venv, `pip install -r requirements.txt`, `streamlit run app.py` — works
-- [X] No `.env` or real keys committed
-- [ ] A full run completes without a traceback
-- [ ] Demo shows a real failed check, a real retry, a real approval
-- [ ] Token counter is non-zero and increases as the run proceeds
-- [X] Downloaded `.md` opens and contains the structured report
-- [ ] Retry cap tested: an objective that never reaches 0.8 still terminates

@@ -36,9 +36,10 @@ Without a `GROQ_API_KEY`, every node falls back to a deterministic mock —
 the graph, the retry loop, and the UI all still run end to end. This is
 intentional: it's how you demo the retry cycle without burning API calls.
 
-## Screenshots
 
-![Uploading Demo.gif…]()
+## 🎥 Demo
+
+![Demo](demo.gif)
 
 
 

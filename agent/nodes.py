@@ -13,7 +13,7 @@ def _llm(state):
     )
 
 
-# ---------------------------------------------------------------- Planner --
+# -- Planner --
 def planner(state):
     llm = _llm(state)
     critique = state.get("critique", "")
@@ -48,7 +48,7 @@ def planner(state):
     }
 
 
-# -------------------------------------------------------------- Researcher --
+# -- Researcher --
 def researcher(state):
     context_chunks = retrieve(state["goal"], state.get("context_docs", []))
     context = (
@@ -88,7 +88,7 @@ def researcher(state):
     }
 
 
-# ------------------------------------------------------------------ Critic --
+# -- Critic --
 def _extract_json(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
@@ -139,15 +139,8 @@ def critic(state):
     }
 
 
-# ---------------------------------------------------------------- Decision --
+# -- Decision --
 def decision(state):
-    """
-    Router node. It does NOT pick the next node itself — that's the
-    conditional edge (router.should_retry). It only advances retry_count
-    when a retry is actually about to happen, so should_retry() reads a
-    consistent, already-incremented count and the cap can never be
-    bypassed by an off-by-one.
-    """
     will_retry = (
         state["quality_score"] < QUALITY_THRESHOLD
         and state["retry_count"] < MAX_RETRIES
@@ -164,7 +157,7 @@ def decision(state):
     }
 
 
-# --------------------------------------------------------------- Reporting --
+# -- Reporting --
 def reporting(state):
     report_obj = FinalReport(
         goal=state["goal"],

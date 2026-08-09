@@ -1,8 +1,3 @@
-"""
-agent/models.py
-Pydantic schema for the validated final report. The Reporting node must
-produce a validated object, not a raw string dump — this is that object.
-"""
 from pydantic import BaseModel, Field
 
 

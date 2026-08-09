@@ -1,11 +1,3 @@
-"""
-agent/rag.py
-Lightweight retrieval over uploaded documents. Deliberately dependency
--light (keyword overlap, no embeddings) so the assignment runs with
-zero extra services. Swap `retrieve()` for a FAISS/Chroma-backed
-version later without touching the graph — the function signature is
-the seam.
-"""
 import re
 from io import BytesIO
 

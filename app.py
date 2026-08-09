@@ -1,252 +1,197 @@
+
+# # '''
+# # - chat interface
+# # - file upload
+# # - sidebar
+# #     - temp
+# #     - api-key
+# #     - model
+# # - token counter
+# # - state view
+# # - download markdown
+
+
 import streamlit as st
-import pandas as pd
-import os
-import re
-import time
 
-
-# '''
-# - chat interface
-# - file upload
-# - sidebar
-#     - temp
-#     - api-key
-#     - model
-# - token counter
-# - state view
-# - download markdown
-
-
-# '''
-
-# ============================================================
-# Page configuration
-# ============================================================
+from agent import app as agent_app, QUALITY_THRESHOLD, MAX_RETRIES, initial_state
+from agent.rag import load_pdf, chunk_text
 
 st.set_page_config(
-    page_title="AI Operations Dashboard",
-    page_icon="🤖",
-    layout="wide",
+    page_title="Multi-Agent Research Dashboard", page_icon="🤖", layout="wide"
 )
 
-
 # ============================================================
-# Session State
+# Session state
 # ============================================================
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "tokens" not in st.session_state:
-    st.session_state.tokens = 0
-
-if "last_report" not in st.session_state:
-    st.session_state.last_report = ""
-
+_DEFAULTS = {
+    "messages": [],
+    "tokens": 0,
+    "context_docs": [],
+    "last_report": "",
+    "last_log": [],
+}
+for _key, _value in _DEFAULTS.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _value
 
 # ============================================================
 # Sidebar
 # ============================================================
-
 with st.sidebar:
     st.header("⚙️ Controls")
 
     model = st.selectbox(
         "Model",
-        [
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "openai/gpt-oss-20b",
-        ],
+        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b"],
     )
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
 
-    temperature = st.slider(
-        "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.2,
-        step=0.1,
+    st.divider()
+    st.subheader("📄 Knowledge source")
+    uploaded_files = st.file_uploader(
+        "Upload documents for the Researcher",
+        type=["pdf", "txt"],
+        accept_multiple_files=True,
     )
+    if uploaded_files:
+        chunks = []
+        for f in uploaded_files:
+            raw = f.read()
+            if f.type == "application/pdf":
+                chunks += load_pdf(raw)
+            else:
+                chunks += chunk_text(raw.decode("utf-8", errors="ignore"))
+        st.session_state.context_docs = chunks
+        st.success(f"{len(chunks)} chunks indexed from {len(uploaded_files)} file(s)")
 
-    st.metric(
-        "Tokens used (session)",
-        st.session_state.tokens,
+    st.divider()
+    st.metric("Tokens used (session)", st.session_state.tokens)
+    st.caption(
+        f"Quality threshold: **{QUALITY_THRESHOLD}** · Max retries: **{MAX_RETRIES}**"
     )
 
     if st.button("Reset chat"):
-        st.session_state.messages = []
-        st.session_state.tokens = 0
-        st.session_state.last_report = ""
-
+        for _key, _value in _DEFAULTS.items():
+            st.session_state[_key] = _value
         st.rerun()
 
-
 # ============================================================
-# Main UI
+# Header
 # ============================================================
-
-st.title("🤖 AI Operations Dashboard")
-
+st.title("🤖 Multi-Agent Research Dashboard")
 st.caption(
-    "Multi-agent research system · streaming · token tracking"
+    "Planner → Researcher → Critic → Decision → Reporting — with a live, visible retry loop"
 )
 
-
 # ============================================================
-# Display previous messages
+# Chat history
 # ============================================================
-
 for message in st.session_state.messages:
-
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+prompt = st.chat_input("Enter a research objective...")
+
+ICONS = {
+    "planner": "🧭",
+    "researcher": "🔎",
+    "critic": "🧐",
+    "decision": "⚖️",
+    "reporting": "📝",
+}
 
 # ============================================================
-# Chat Input
+# Run agent
 # ============================================================
-
-prompt = st.chat_input(
-    "Enter a research objective..."
-)
-
-
-# ============================================================
-# Run Agent
-# ============================================================
-
 if prompt:
-
-    # --------------------------------------------------------
-    # Display user message
-    # --------------------------------------------------------
-
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": prompt,
-        }
-    )
-
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-
-    # --------------------------------------------------------
-    # Assistant response
-    # --------------------------------------------------------
-
     with st.chat_message("assistant"):
+        state_view = st.empty()
+        final_report = ""
+        current_state = dict(
+            initial_state(
+                goal=prompt,
+                context_docs=st.session_state.context_docs,
+                model=model,
+                temperature=temperature,
+            )
+        )
 
-        # Status container
-        with st.status(
-            "Agent working...",
-            expanded=True,
-        ) as status:
-
-            final_report = ""
-
+        with st.status("Agent working...", expanded=True) as status:
             try:
+                for update in agent_app.stream(current_state):
+                    for node_name, partial in update.items():
+                        current_state.update(partial)
+                        icon = ICONS.get(node_name, "•")
 
-                # ------------------------------------------------
-                # Replace this with your actual agent
-                # ------------------------------------------------
+                        if node_name == "planner":
+                            st.write(
+                                f"{icon} **Planner** → {len(current_state['tasks'])} tasks planned"
+                            )
+                        elif node_name == "researcher":
+                            st.write(
+                                f"{icon} **Researcher** → {len(current_state['findings'])} findings gathered"
+                            )
+                        elif node_name == "critic":
+                            gap = current_state["critique"][:60] or "no gaps"
+                            st.write(
+                                f"{icon} **Critic** → score {round(current_state['quality_score'], 2)} ({gap})"
+                            )
+                        elif node_name == "decision":
+                            verdict = (
+                                "RETRY"
+                                if current_state["log"][-1].endswith("RETRY")
+                                else "APPROVE"
+                            )
+                            st.write(
+                                f"{icon} **Decision** → retry_count={current_state['retry_count']} → {verdict}"
+                            )
+                        elif node_name == "reporting":
+                            final_report = current_state["report"]
+                            st.write(f"{icon} **Reporting** → final report assembled")
 
-                for node, message, tokens in run_agent(
-                    prompt,
-                    model=model,
-                    temperature=temperature,
-                ):
+                        st.session_state.tokens = current_state["total_tokens"]
 
-                    # Update token counter
-                    st.session_state.tokens += tokens
+                        with state_view.container():
+                            st.markdown("##### 📊 Live state")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("Tasks", len(current_state.get("tasks", [])))
+                            c2.metric(
+                                "Quality score",
+                                round(current_state.get("quality_score", 0.0), 2),
+                            )
+                            c3.metric(
+                                "Retry count",
+                                f"{current_state.get('retry_count', 0)}/{MAX_RETRIES}",
+                            )
 
-
-                    # --------------------------------------------
-                    # Final report
-                    # --------------------------------------------
-
-                    if node == "report":
-
-                        final_report = message
-
-                        st.write(
-                            "📝 **Report** → final report ready"
-                        )
-
-
-                    # --------------------------------------------
-                    # Agent steps
-                    # --------------------------------------------
-
-                    else:
-
-                        icons = {
-                            "planner": "🧭",
-                            "research": "🔎",
-                            "critic": "🧐",
-                            "decision": "⚖️",
-                        }
-
-                        icon = icons.get(
-                            node,
-                            "•",
-                        )
-
-                        st.write(
-                            f"{icon} **{node}** → {message}"
-                        )
-
-
-                # Agent finished
-                status.update(
-                    label="Done ✅",
-                    state="complete",
-                )
-
+                status.update(label="Done ✅", state="complete")
 
             except Exception as e:
-
-                status.update(
-                    label="Error",
-                    state="error",
-                )
-
-                st.error(
-                    f"Agent failed: {e}"
-                )
-
-
-        # --------------------------------------------------------
-        # Display final report
-        # --------------------------------------------------------
+                status.update(label="Error", state="error")
+                st.error(f"Agent failed: {e}")
 
         if final_report:
-
             st.markdown("### Final Report")
-
             st.markdown(final_report)
 
-            # Save report in session
-            st.session_state.last_report = final_report
+            with st.expander("🕓 Full cycle log (per-node trace)"):
+                for line in current_state.get("log", []):
+                    st.text(line)
 
-            # Save assistant message
+            st.session_state.last_report = final_report
+            st.session_state.last_log = current_state.get("log", [])
             st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": final_report,
-                }
+                {"role": "assistant", "content": final_report}
             )
 
 
-# ============================================================
-# Export Report
-# ============================================================
-
 if st.session_state.last_report:
-
     st.download_button(
-        label="⬇️ Export report (Markdown)",
+        "⬇️ Export report (Markdown)",
         data=st.session_state.last_report,
         file_name="agent_report.md",
         mime="text/markdown",

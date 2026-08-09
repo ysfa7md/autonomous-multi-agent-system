@@ -1,151 +1,182 @@
-from agent.state import AgentState
 import json
 import re
 
+from agent.llm import get_llm, extract_tokens
+from agent.models import FinalReport
+from agent.rag import retrieve
+from agent.state import QUALITY_THRESHOLD, MAX_RETRIES
 
 
-# ---- Planner: adapts on retry using last critique ----
-def planner(state: AgentState):
-    iteration = state["iteration"] + 1
-    prior = state.get("gaps", "")
-
-    if HAS_KEY:
-        prompt = (
-            f"You are a planning agent. Goal: {state['goal']}.\n"
-            f"Previous critique to address (empty on first pass): "
-            f"{prior or 'none'}.\n"
-            "Return 3 short task bullets that specifically address any gaps. "
-            "One per line, no numbering."
-        )
-
-        text = llm.invoke(prompt).content
-
-        tasks = [
-            task.strip("-* ").strip() for task in text.splitlines() if task.strip()
-        ][:3]
-
-    else:
-        base_tasks = [
-            f"Define scope of '{state['goal']}'",
-            "Gather key facts",
-            "Identify risks",
-        ]
-
-        tasks = (
-            base_tasks
-            if iteration == 1
-            else base_tasks + [f"Address gap: {prior[:60]}"]
-        )
-
-    print(
-        f"🧭 Planner (iteration {iteration}) -> "
-        f"{len(tasks)} tasks" + (f' [addressing: "{prior[:40]}..."]' if prior else "")
+def _llm(state):
+    return get_llm(
+        state.get("model", "llama-3.3-70b-versatile"), state.get("temperature", 0.2)
     )
 
+
+# ---------------------------------------------------------------- Planner --
+def planner(state):
+    llm = _llm(state)
+    critique = state.get("critique", "")
+
+    if llm:
+        prompt = (
+            f"You are a planning agent. Goal: {state['goal']}\n"
+            f"Previous critique to address (empty on first pass): {critique or 'none'}\n"
+            "Return exactly 3 short research task bullets, one per line, "
+            "no numbering. If a critique is given, the new tasks must "
+            "specifically close those gaps — do not repeat the old plan."
+        )
+        response = llm.invoke(prompt)
+        tasks = [
+            t.strip("-* ").strip() for t in response.content.splitlines() if t.strip()
+        ][:3]
+        tokens = extract_tokens(response)
+    else:
+        base = [
+            f"Define scope of '{state['goal']}'",
+            "Gather key facts and data points",
+            "Identify risks and open questions",
+        ]
+        tasks = base if not critique else base + [f"Address gap: {critique[:60]}"]
+        tokens = 0
+
+    log_line = f"[planner] retry_count={state['retry_count']} -> {len(tasks)} tasks"
     return {
-        "iteration": iteration,
-        "completed_tasks": tasks,
+        "tasks": tasks,
+        "total_tokens": state["total_tokens"] + tokens,
+        "log": state["log"] + [log_line],
     }
 
 
-# ---- Researcher: RAG-grounded ----
-def research(state: AgentState):
-    ctx, srcs = retrieve(state["goal"])
+# -------------------------------------------------------------- Researcher --
+def researcher(state):
+    context_chunks = retrieve(state["goal"], state.get("context_docs", []))
+    context = (
+        "\n---\n".join(context_chunks) if context_chunks else "(no uploaded documents)"
+    )
 
-    if HAS_KEY:
+    llm = _llm(state)
+    if llm:
         prompt = (
-            "Answer ONLY from the context. Be concise (3-4 sentences). "
-            "If a task from the plan isn't covered, say so.\n"
-            f"Plan: {state['completed_tasks']}\n\n"
-            f"Context:\n{ctx}\n\n"
+            "Address each task below in 1-2 sentences. Use the context if "
+            "relevant, otherwise use general knowledge and say so.\n"
+            f"Tasks: {state['tasks']}\n\n"
+            f"Context:\n{context}\n\n"
             f"Goal: {state['goal']}"
         )
-
-        findings = llm.invoke(prompt).content
-
+        response = llm.invoke(prompt)
+        findings = [
+            line.strip("-* ").strip()
+            for line in response.content.splitlines()
+            if line.strip()
+        ]
+        tokens = extract_tokens(response)
     else:
-        findings = (
-            f"Findings on {state['goal']} (grounded): "
-            "market is growing, led by Copilot/Cursor; "
-            "key risks are security/license leakage, hallucinated APIs, "
-            "and unclear regulation; "
-            "pricing is per-seat 10-40 USD/user/month."
-        )
+        findings = [
+            f"Finding for '{task}': (mock) preliminary data gathered."
+            for task in state["tasks"]
+        ]
+        tokens = 0
 
-        # First pass intentionally omits risks
-        # so the Critic can detect the gap.
-        if state["iteration"] == 1:
-            findings = (
-                f"Findings on {state['goal']} (grounded): "
-                "market is growing, led by Copilot/Cursor."
-            )
-
-    print(
-        "🔎 Research -> grounded findings gathered",
-        "| sources:",
-        srcs,
+    log_line = (
+        f"[researcher] {len(findings)} findings (docs used: {len(context_chunks)})"
     )
-
     return {
         "findings": findings,
-        "sources": srcs,
+        "total_tokens": state["total_tokens"] + tokens,
+        "log": state["log"] + [log_line],
     }
 
 
-# ---- Critic: scores findings and identifies gaps ----
-def _extract_json(text: str):
+# ------------------------------------------------------------------ Critic --
+def _extract_json(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.S)
-    return json.loads(match.group(0)) if match else {}
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return {}
 
 
-def critic(state: AgentState):
-    if HAS_KEY:
+def critic(state):
+    llm = _llm(state)
+    findings_text = "\n".join(state["findings"])
+
+    if llm:
         prompt = (
-            "You are a strict reviewer. "
-            "Score the findings for completeness vs the goal.\n"
-            "Return ONLY JSON: "
-            '{"score": <0..1 float>, "gaps": "<one sentence>"}.\n'
+            "You are a strict reviewer. Score coverage and quality of these "
+            "findings against the goal, 0.0-1.0. Return ONLY JSON: "
+            '{"score": <float>, "critique": "<one sentence on the gaps>"}\n'
             f"Goal: {state['goal']}\n"
-            f"Findings: {state['findings']}"
+            f"Findings:\n{findings_text}"
         )
-
-        try:
-            data = _extract_json(llm.invoke(prompt).content)
-
-            score = float(data.get("score", 0.5))
-            gaps = str(data.get("gaps", ""))
-
-        except Exception:
-            score = 0.5
-            gaps = "Could not parse critic output; " "treat as incomplete."
-
+        response = llm.invoke(prompt)
+        data = _extract_json(response.content)
+        score = float(data.get("score", 0.5))
+        critique = str(
+            data.get("critique", "Could not parse critic output; treat as incomplete.")
+        )
+        tokens = extract_tokens(response)
     else:
-        has_risks = "risk" in state["findings"].lower()
-
-        score = 0.9 if has_risks else 0.5
-
-        gaps = (
-            ""
-            if has_risks
-            else "Findings omit key risks; " "add security, regulation, over-reliance."
+        # Deterministic mock: first pass always scores under threshold so
+        # the retry loop is demonstrable with zero API key / cost.
+        first_pass = state["retry_count"] == 0
+        score = 0.55 if first_pass else 0.9
+        critique = (
+            "Findings lack depth on risks and sourcing; expand coverage."
+            if first_pass
+            else ""
         )
+        tokens = 0
 
-    print(
-        f"🧐 Critic -> quality_score = {round(score, 2)}"
-        + (f" | gap: {gaps[:50]}" if gaps else "")
-    )
-
+    log_line = f"[critic] score={round(score, 2)} critique='{critique[:50]}'"
     return {
         "quality_score": score,
-        "gaps": gaps,
+        "critique": critique,
+        "total_tokens": state["total_tokens"] + tokens,
+        "log": state["log"] + [log_line],
     }
 
 
-def decision(state: AgentState):
-    print(
-        f"⚖️ Decision -> score "
-        f"{round(state['quality_score'], 2)} "
-        f"at iteration {state['iteration']}"
+# ---------------------------------------------------------------- Decision --
+def decision(state):
+    """
+    Router node. It does NOT pick the next node itself — that's the
+    conditional edge (router.should_retry). It only advances retry_count
+    when a retry is actually about to happen, so should_retry() reads a
+    consistent, already-incremented count and the cap can never be
+    bypassed by an off-by-one.
+    """
+    will_retry = (
+        state["quality_score"] < QUALITY_THRESHOLD
+        and state["retry_count"] < MAX_RETRIES
+    )
+    new_count = state["retry_count"] + 1 if will_retry else state["retry_count"]
+
+    log_line = (
+        f"[decision] score={round(state['quality_score'], 2)} "
+        f"retry_count={state['retry_count']} -> {'RETRY' if will_retry else 'APPROVE'}"
+    )
+    return {
+        "retry_count": new_count,
+        "log": state["log"] + [log_line],
+    }
+
+
+# --------------------------------------------------------------- Reporting --
+def reporting(state):
+    report_obj = FinalReport(
+        goal=state["goal"],
+        quality_score=state["quality_score"],
+        retries_used=state["retry_count"],
+        below_threshold=state["quality_score"] < QUALITY_THRESHOLD,
+        findings=state["findings"],
+        critique=state["critique"],
     )
 
-    return {}
+    log_line = "[reporting] final report validated + assembled"
+    return {
+        "report": report_obj.to_markdown(),
+        "log": state["log"] + [log_line],
+    }

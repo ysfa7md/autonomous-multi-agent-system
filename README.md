@@ -38,5 +38,7 @@ intentional: it's how you demo the retry cycle without burning API calls.
 
 ## Screenshots
 
-...
+![Uploading Demo.gif…]()
+
+
 
